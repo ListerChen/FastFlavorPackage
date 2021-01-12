@@ -1,0 +1,278 @@
+
+import java.nio.ByteBuffer
+import java.nio.charset.StandardCharsets
+import java.util.zip.ZipFile
+import groovy.transform.Field
+
+@Field int CENTRAL_DIRECTORY_END_SIGN = 0x06054b50
+@Field String SIGNATURE_MAGIC_NUMBER = "APK Sig Block 42"
+@Field int CHANNEL_KV_ID = 0x010101
+
+def assembleFlavorApk() {
+    File appBuildDir = new File(project.buildDir.absolutePath)
+    if (!appBuildDir.exists()) {
+        println("当前build目录不存在, 请检查当前task是否依赖于assemble任务!!!")
+        return
+    }
+    File originApk = new File(appBuildDir, "outputs/apk/release/app-release.apk")
+    if (!originApk.exists()) {
+        println("初始apk不存在, 请检查目录!!!")
+        return
+    }
+    File flavorDir = new File(appBuildDir, "outputs/apk/flavor")
+    if (flavorDir.exists()) {
+        flavorDir.deleteDir()
+    }
+    flavorDir.mkdirs()
+    // 读取渠道包配置文件, 开始根据渠道号打包
+    def flavorProperties = new File(project.projectDir, "flavor.properties")
+    flavorProperties.eachLine { channelName ->
+        assembleApkByChannel(flavorDir, channelName, originApk)
+    }
+}
+
+def assembleApkByChannel(File flavorDir, String channelName, File originApk) {
+    def flavorFile = new File(flavorDir, channelName + ".apk")
+    flavorFile.withOutputStream {os ->
+        originApk.withInputStream {is ->
+            os << is
+        }
+    }
+    assembleByChannel(flavorFile.absolutePath, channelName)
+}
+
+/**
+ * 对当前渠道进行打包
+ */
+def assembleByChannel(String apkPath, String channel) {
+    ZipFile zipFile = null
+    try {
+        zipFile = new ZipFile(apkPath)
+        String zipComment = zipFile.getComment()
+        int commentLength = 0
+        if (zipComment != null && zipComment.length() > 0) {
+            commentLength = zipComment.getBytes().length
+        }
+        File file = new File(apkPath)
+        // 获取zip中央目录结束标记
+        long fileLength = file.length()
+        byte[] centralEndSignBytes = readReserveData(file, fileLength - 22, 4)
+        int centralEndSign = ByteBuffer.wrap(centralEndSignBytes).getInt()
+        if (centralEndSign != CENTRAL_DIRECTORY_END_SIGN) {
+            println("zip中央目录结束标记错误!!!!!!!!!!!!!!!!!")
+            return
+        }
+        long eoCdrLength = commentLength + 22
+        long eoCdrOffset = file.length() - eoCdrLength
+        // 中央目录区的偏移量保存在 EoCDR 开始位置 16 字节处, 一共 4 字节
+        long pointer = eoCdrOffset + 16
+        // 中央目录偏移
+        byte[] pointerBuffer = readReserveData(file, pointer, 4)
+        int centralDirectoryOffset = ByteBuffer.wrap(pointerBuffer).getInt()
+
+        byte[] buffer = readDataByOffset(file, centralDirectoryOffset - 16, 16)
+        String checkV2Signature = new String(buffer, StandardCharsets.US_ASCII)
+        if (!checkV2Signature.equals(SIGNATURE_MAGIC_NUMBER)) {
+            println("当前未使用V2签名!!!!!!!!!!!!!!!!!!!!!!!")
+            return
+        }
+        long signBlockEnd = centralDirectoryOffset - 24
+        byte[] sigSizeInEndBuffer = readReserveData(file, signBlockEnd, 8)
+        long sigSizeInEnd = ByteBuffer.wrap(sigSizeInEndBuffer).getLong()
+
+        long signBlockStart = signBlockEnd - sigSizeInEnd + 16
+        byte[] sigSizeInStartBuffer = readReserveData(file, signBlockStart, 8)
+        long sigSizeInStart = ByteBuffer.wrap(sigSizeInStartBuffer).getLong()
+
+        if (sigSizeInEnd != sigSizeInStart) {
+            println("签名块大小不一致, 读取信息错误!!!!!!!!!!!!!!!!!!!!!!!!")
+            return
+        }
+        long lastKvOffset = checkKeyValues(file, signBlockStart, signBlockEnd)
+        if (lastKvOffset == 0) {
+            println("当前APK中已经有渠道信息, 不得重复插入!!!!!!!!!!!!!!!!!!!!!!")
+            return
+        }
+        if (checkIfSingleKvEmpty(file, lastKvOffset)) {
+            insertChannelInfo(channel, file, apkPath, lastKvOffset, signBlockEnd)
+            checkKeyValues(file, signBlockStart, signBlockEnd)
+        } else {
+            println("最后一个KV不为空, 当前程序不支持, 需要扩展签名块的大小......")
+        }
+    } catch (Exception e) {
+        e.printStackTrace()
+    } finally {
+        try {
+            if (zipFile != null) {
+                zipFile.close()
+            }
+        } catch (IOException e) {
+            println(e)
+        }
+    }
+}
+
+/**
+ * 检查签名块中的键值对信息, 寻找可以插入渠道信息的地方
+ * 这里选择获取最后一个键值对的地址, 该键值对一般全是0, 修改其大小并插入渠道信息
+ */
+def checkKeyValues(File file, long signBlockStart, long signBlockEnd) throws Exception {
+    long curKvOffset = signBlockStart + 8
+    long lastKvOffset
+    while (true) {
+        lastKvOffset = curKvOffset
+        byte[] kvSizeBytes = readReserveData(file, curKvOffset, 8)
+        long kvSize = ByteBuffer.wrap(kvSizeBytes).getLong()
+        byte[] idBuffer = readReserveData(file, curKvOffset + 8, 4)
+        int id = ByteBuffer.wrap(idBuffer).getInt()
+        if (id == CHANNEL_KV_ID) {
+            int channelSize = (int) (kvSize - 4)
+            byte[] channelBytes = readDataByOffset(file, curKvOffset + 12, channelSize)
+            String channelString = new String(channelBytes, StandardCharsets.US_ASCII)
+            println("channelString: " + channelString)
+            return 0
+        }
+        curKvOffset = curKvOffset + 8 + kvSize
+        if (curKvOffset >= signBlockEnd) {
+            break
+        }
+    }
+    return lastKvOffset
+}
+
+/**
+ * 检查某个KV的值是否为空, 如果为空才能插入自己的信息
+ */
+boolean checkIfSingleKvEmpty(File file, long offset) throws Exception {
+    boolean result = true
+    byte[] kvSizeBytes = readReserveData(file, offset, 8)
+    long kvSize = ByteBuffer.wrap(kvSizeBytes).getLong()
+    byte[] bytes = readDataByOffset(file, offset + 12, (int) (kvSize - 4))
+    for (byte b : bytes) {
+        if (b != 0) {
+            result = false
+            break
+        }
+    }
+    return result
+}
+
+/**
+ * 在签名块中插入渠道信息
+ * @param lastKvOffset 签名块中最后一个KV的地址偏移, 需要在该KV中插入签名信息
+ * @param signBlockEnd 签名块末尾地址
+ */
+def insertChannelInfo(String channel, File file, String filePath,
+                                      long lastKvOffset, long signBlockEnd) throws Exception {
+    byte[] channelBytes = channel.getBytes()
+    byte[] channelInfo = buildKeyValue(CHANNEL_KV_ID, channelBytes)
+    byte[] lastKvSize = readReserveData(file, lastKvOffset, 8)
+    long size = ByteBuffer.wrap(lastKvSize).getLong()
+    long newSize = size - channelInfo.length
+    byte[] newLastKvSizeBytes = toLittleEndianBytes(newSize, 8)
+    insertOrOverrideBytes(filePath, lastKvOffset, newLastKvSizeBytes, true)
+    insertOrOverrideBytes(filePath, signBlockEnd - channelInfo.length, channelInfo, true)
+}
+
+/**
+ * 构建要插入签名块的键值对字节数组
+ */
+static byte[] buildKeyValue(int key, byte[] value) {
+    byte[] keyBytes = toLittleEndianBytes(key, 4)
+    long kvSize = 4 + value.length
+    byte[] kvSizeBytes = toLittleEndianBytes(kvSize, 8)
+
+    byte[] result = new byte[8 + 4 + value.length]
+    System.arraycopy(kvSizeBytes, 0, result, 0, 8)
+    System.arraycopy(keyBytes, 0, result, 8, 4)
+    System.arraycopy(value, 0, result, 12, value.length)
+    return result
+}
+
+/**
+ * 将数字转化为小端模式的字节
+ * @param size 数字是4字节还是8字节
+ */
+static byte[] toLittleEndianBytes(long num, int size) {
+    byte[] result = new byte[size]
+    long t = num
+    for (int i = size - 1; i >= 0; i--) {
+        result[i] = (byte) (t % 256)
+        t /= 256
+    }
+    // 由于是小端模式, 需要将结果逆置
+    reserveByteArray(result)
+    return result
+}
+
+static byte[] readDataByOffset(File file, long offset, int length) throws Exception {
+    InputStream is = new FileInputStream(file)
+    is.skip(offset)
+    byte[] buffer = new byte[length]
+    is.read(buffer, 0, length)
+    is.close()
+    return buffer
+}
+
+static byte[] readReserveData(File file, long offset, int length) throws Exception {
+    byte[] buffer = readDataByOffset(file, offset, length)
+    reserveByteArray(buffer)
+    return buffer
+}
+
+static void reserveByteArray(byte[] bytes) {
+    int length = bytes.length
+    for (int i = 0; i < length / 2; i++) {
+        byte temp = bytes[i]
+        bytes[i] = bytes[length - 1 - i]
+        bytes[length - 1 - i] = temp
+    }
+}
+
+def insertOrOverrideBytes(String filePath, long offset, byte[] bytes, boolean override) {
+    File tmp = null
+    try {
+        File appBuildDir = new File(project.buildDir.absolutePath)
+        File flavorDir = new File(appBuildDir, "outputs/apk/flavor")
+        tmp = new File(flavorDir, "tmp")
+        if (tmp.exists()) {
+            if (!tmp.delete()) {
+                println("删除tmp文件失败, 退出...")
+                return
+            }
+        }
+        if (!tmp.createNewFile()) {
+            println("创建tmp文件失败, 退出...")
+            return
+        }
+        RandomAccessFile raf = new RandomAccessFile(filePath, "rw")
+        FileOutputStream fos = new FileOutputStream(tmp)
+        FileInputStream fis = new FileInputStream(tmp)
+        // 将后半部分文件写入临时文件
+        long pointer = offset
+        if (override) {
+            pointer += bytes.length
+        }
+        raf.seek(pointer)
+        byte[] buffer = new byte[1024]
+        int length
+        while ((length = raf.read(buffer)) > 0) {
+            fos.write(buffer, 0, length)
+        }
+        raf.seek(offset)
+        raf.write(bytes)
+        while ((length = fis.read(buffer)) > 0) {
+            raf.write(buffer, 0, length)
+        }
+    } catch (Exception e) {
+        println(e)
+    } finally {
+        if (tmp != null && tmp.exists()) {
+            tmp.delete()
+        }
+    }
+}
+
+ext {
+    assembleFlavorApk = this.&assembleFlavorApk
+}
