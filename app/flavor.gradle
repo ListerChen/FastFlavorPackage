@@ -14,12 +14,13 @@ def assembleFlavorApk() {
         println("当前build目录不存在, 请检查当前task是否依赖于assemble任务!!!")
         return
     }
-    File originApk = new File(appBuildDir, "outputs/apk/release/app-release.apk")
+    File originApk = new File(appBuildDir, "outputs" + File.separator + "apk" +
+            File.separator + "release" + File.separator + "app-release.apk")
     if (!originApk.exists()) {
         println("初始apk不存在, 请检查目录!!!")
         return
     }
-    File flavorDir = new File(appBuildDir, "outputs/apk/flavor")
+    File flavorDir = new File(appBuildDir, "outputs" + File.separator + "apk" + File.separator + "flavor")
     if (flavorDir.exists()) {
         flavorDir.deleteDir()
     }

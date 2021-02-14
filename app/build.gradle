@@ -4,7 +4,7 @@ apply from : "flavor.gradle"
 android {
     signingConfigs {
         release {
-            storeFile file('/Users/chentianran/AndroidProjects/FlavourPackageTest/app/flavourtest.jks')
+            storeFile file('..' + File.separator + 'app' + File.separator + 'flavourtest.jks')
             storePassword '123456'
             keyAlias 'flavourtest'
             keyPassword '123456'
