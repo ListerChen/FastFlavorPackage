@@ -54,9 +54,10 @@ def assembleByChannel(String apkPath, String channel) {
             commentLength = zipComment.getBytes().length
         }
         File file = new File(apkPath)
-        // 获取zip中央目录结束标记
         long fileLength = file.length()
-        byte[] centralEndSignBytes = readReserveData(file, fileLength - 22, 4)
+        // 获取zip中央目录结束标记
+        byte[] centralEndSignBytes = readReserveData(
+                file, fileLength - 22 - commentLength, 4)
         int centralEndSign = ByteBuffer.wrap(centralEndSignBytes).getInt()
         if (centralEndSign != CENTRAL_DIRECTORY_END_SIGN) {
             println("zip中央目录结束标记错误!!!!!!!!!!!!!!!!!")
