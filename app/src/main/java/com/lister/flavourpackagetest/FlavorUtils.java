@@ -83,7 +83,7 @@ public class FlavorUtils {
                 if (id == CHANNEL_KV_ID) {
                     int channelSize = (int) (kvSize - 4);
                     byte[] channelBytes = readDataByOffset(file, curKvOffset + 12, channelSize);
-                    sChannel = new String(channelBytes, StandardCharsets.US_ASCII);
+                    sChannel = new String(channelBytes, StandardCharsets.UTF_8);
                     sChannelInited = true;
                     return sChannel;
                 }

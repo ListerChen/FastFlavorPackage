@@ -73,7 +73,7 @@ def assembleByChannel(String apkPath, String channel) {
         int centralDirectoryOffset = ByteBuffer.wrap(pointerBuffer).getInt()
 
         byte[] buffer = readDataByOffset(file, centralDirectoryOffset - 16, 16)
-        String checkV2Signature = new String(buffer, StandardCharsets.US_ASCII)
+        String checkV2Signature = new String(buffer, StandardCharsets.UTF_8)
         if (!checkV2Signature.equals(SIGNATURE_MAGIC_NUMBER)) {
             println("当前未使用V2签名!!!!!!!!!!!!!!!!!!!!!!!")
             return
@@ -130,7 +130,7 @@ def checkKeyValues(File file, long signBlockStart, long signBlockEnd) throws Exc
         if (id == CHANNEL_KV_ID) {
             int channelSize = (int) (kvSize - 4)
             byte[] channelBytes = readDataByOffset(file, curKvOffset + 12, channelSize)
-            String channelString = new String(channelBytes, StandardCharsets.US_ASCII)
+            String channelString = new String(channelBytes, StandardCharsets.UTF_8)
             println("channelString: " + channelString)
             return 0
         }
@@ -235,7 +235,8 @@ def insertOrOverrideBytes(String filePath, long offset, byte[] bytes, boolean ov
     File tmp = null
     try {
         File appBuildDir = new File(project.buildDir.absolutePath)
-        File flavorDir = new File(appBuildDir, "outputs/apk/flavor")
+        File flavorDir = new File(appBuildDir,
+                "outputs" + File.separator + "apk" + File.separator + "flavor")
         tmp = new File(flavorDir, "tmp")
         if (tmp.exists()) {
             if (!tmp.delete()) {
